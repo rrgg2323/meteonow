@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meteo Live: punto più caldo & freddo (poli esclusi)</title>
+  <link rel="preconnect" href="https://api.open-meteo.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous">
+  <style>
+    :root { --bg:#0b0c10; --card:#12141a; --muted:#8d99ae; --accent:#22c55e; --warn:#ef4444; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background:linear-gradient(160deg,#0b0c10 0%,#111827 100%); color:#e5e7eb; }
+    header { padding:20px 24px 8px; text-align:center; }
+    h1 { margin:0 0 6px; font-size: clamp(22px,3vw,34px); }
+    p.sub { margin:0; color:#a3a3a3; }
+    main { display:grid; gap:16px; grid-template-columns: 1fr; padding:16px; max-width:1200px; margin:0 auto; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap:16px; }
+    .card { background:rgba(18,20,26,0.8); border:1px solid rgba(255,255,255,0.06); border-radius:16px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); backdrop-filter: blur(8px); }
+    .title { display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:0.2px; }
+    .badge { padding:4px 10px; border-radius:999px; font-size:12px; font-weight:700; }
+    .hot { background: rgba(239,68,68,0.15); color:#fecaca; border:1px solid rgba(239,68,68,0.25); }
+    .cold { background: rgba(34,197,94,0.15); color:#bbf7d0; border:1px solid rgba(34,197,94,0.25); }
+    .temp { font-size: clamp(32px,5vw,56px); font-weight:800; margin:14px 0 2px; }
+    .loc { font-size: 16px; color:#cbd5e1 }
+    .time { font-size:13px; color:#94a3b8; margin-top:6px }
+    footer { text-align:center; color:#7f8ea3; padding:10px 24px 24px }
+    .small { font-size:12px }
+    .list { margin-top: 8px; font-size: 13px; max-height: 200px; overflow:auto; border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 8px; }
+    .row { display:flex; justify-content:space-between; gap:8px; padding:6px 0; border-bottom: 1px dotted rgba(255,255,255,0.05) }
+    .row:last-child{ border-bottom:none }
+    .loading { opacity: 0.7; }
+    .err { color:#fecaca }
+    .controls { display:flex; gap:10px; justify-content:center; align-items:center; margin:10px 0 0; flex-wrap: wrap }
+    button, select { background:#1f2937; border:1px solid rgba(255,255,255,0.12); color:#e5e7eb; border-radius:10px; padding:8px 12px; cursor:pointer }
+    button:hover{ background:#111827 }
+    #map { height: 420px; width: 100%; border-radius: 16px; overflow:hidden; border:1px solid rgba(255,255,255,0.08) }
+    details { margin-top: 6px; color:#a3a3a3 }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>In questo momento nel mondo</h1>
+    <p class="sub">Il luogo più <b>caldo</b> e il luogo più <b>freddo</b> (poli esclusi). Dati live da Open‑Meteo.</p>
+    <div class="controls">
+      <button id="refresh">Aggiorna</button>
+      <select id="pack">
+        <option value="basic">Pack: Basic (≈150 città)</option>
+        <option value="extended">Pack: Esteso (1000+ se disponibile)</option>
+      </select>
+    </div>
+  </header>
+
+  <main>
+    <div id="map" class="card"></div>
+
+    <div class="grid">
+      <section class="card" id="hotCard">
+        <div class="title"><span class="badge hot">Più caldo</span></div>
+        <div class="temp" id="hotTemp">—</div>
+        <div class="loc" id="hotLoc">—</div>
+        <div class="time" id="hotTime"></div>
+        <details class="small"><summary>Vedi top 10 calde</summary>
+          <div class="list" id="hotList"></div>
+        </details>
+      </section>
+
+      <section class="card" id="coldCard">
+        <div class="title"><span class="badge cold">Più freddo</span></div>
+        <div class="temp" id="coldTemp">—</div>
+        <div class="loc" id="coldLoc">—</div>
+        <div class="time" id="coldTime"></div>
+        <details class="small"><summary>Vedi top 10 fredde</summary>
+          <div class="list" id="coldList"></div>
+        </details>
+      </section>
+    </div>
+  </main>
+
+  <footer class="small">Open‑Meteo non richiede API key per uso non commerciale. <a href="https://open-meteo.com/en/docs" target="_blank" rel="noreferrer">Documentazione API</a>. | Tip: passa al "Pack Esteso" quando carichi <code>/packs/world1000.json</code> sul tuo hosting.</footer>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<script>
+// ——————————————————————————————————————————————
+// PHASE 1 – CITIES APPROACH (MVP)
+// - Usa una lista di città (basic ~150 inclusa qui; extended 1000+ via file esterno opzionale)
+// - Richiama Open‑Meteo in modalità multi‑coords, batch da 120 punti per ridurre le chiamate
+// - Ordina e mostra hot/cold + top 10; pin sulla mappa
+//
+// PHASE 2 – SERVER REFINE (scheletro): se esiste window.REFINE_ENDPOINT, chiama /api/hot-cold/refine
+// ——————————————————————————————————————————————
+
+const API = "https://api.open-meteo.com/v1/forecast"; // nessuna API key
+const CURRENT_PARAM = "current=temperature_2m"; // nowcast di modello
+const BATCH_SIZE = 120; // Open‑Meteo regge liste lunghe; 100–200 è OK
+
+// Pack BASIC integrato (≈150). Distribuito per latitudine/continenti e hotspot noti.
+// Nota: poli esclusi implicitamente (non includiamo |lat|>=66.5)
+const BASIC = [
+  // — Africa / Sahara & Sahel hotspot
+  {name:"Dallol, ET", lat:14.241, lon:40.300},{name:"Kufra, LY", lat:24.180, lon:23.290},{name:"Faya-Largeau, TD", lat:17.930, lon:19.110},{name:"Timbuktu, ML", lat:16.773, lon:-3.002},{name:"Ouargla, DZ", lat:31.950, lon:5.333},{name:"Tozeur, TN", lat:33.919, lon:8.133},{name:"Atar, MR", lat:20.517, lon:-13.050},{name:"Khartoum, SD", lat:15.500, lon:32.560},{name:"Aswan, EG", lat:24.088, lon:32.899},{name:"Niamey, NE", lat:13.512, lon:2.112},
+  // — Middle East / Gulf
+  {name:"Kuwait City, KW", lat:29.375, lon:47.977},{name:"Basra, IQ", lat:30.508, lon:47.780},{name:"Ahvaz, IR", lat:31.320, lon:48.670},{name:"Abu Dhabi, AE", lat:24.453, lon:54.377},{name:"Doha, QA", lat:25.286, lon:51.533},{name:"Riyadh, SA", lat:24.713, lon:46.675},{name:"Dubai, AE", lat:25.204, lon:55.270},{name:"Muscat, OM", lat:23.588, lon:58.408},{name:"Bandar Abbas, IR", lat:27.183, lon:56.267},{name:"Jeddah, SA", lat:21.485, lon:39.192},
+  // — South Asia hot
+  {name:"Jacobabad, PK", lat:28.281, lon:68.438},{name:"Nawabshah, PK", lat:26.245, lon:68.405},{name:"Delhi, IN", lat:28.613, lon:77.209},{name:"Ahmedabad, IN", lat:23.022, lon:72.571},{name:"Jaisalmer, IN", lat:26.915, lon:70.908},{name:"Nagpur, IN", lat:21.145, lon:79.088},{name:"Hyderabad, IN", lat:17.387, lon:78.487},{name:"Chennai, IN", lat:13.083, lon:80.271},
+  // — SE Asia / Maritime
+  {name:"Bangkok, TH", lat:13.756, lon:100.501},{name:"Phnom Penh, KH", lat:11.556, lon:104.928},{name:"Ho Chi Minh City, VN", lat:10.823, lon:106.629},{name:"Vientiane, LA", lat:17.975, lon:102.633},{name:"Yangon, MM", lat:16.840, lon:96.173},{name:"Singapore, SG", lat:1.352, lon:103.820},{name:"Kuala Lumpur, MY", lat:3.140, lon:101.693},{name:"Jakarta, ID", lat:-6.208, lon:106.845},{name:"Surabaya, ID", lat:-7.257, lon:112.752},{name:"Makassar, ID", lat:-5.147, lon:119.432},
+  // — East Asia hot & cold (sotto il circolo polare)
+  {name:"Wuhan, CN", lat:30.592, lon:114.305},{name:"Chongqing, CN", lat:29.563, lon:106.551},{name:"Nanchang, CN", lat:28.683, lon:115.858},{name:"Guangzhou, CN", lat:23.129, lon:113.264},{name:"Fuzhou, CN", lat:26.074, lon:119.296},
+  {name:"Ulaanbaatar, MN", lat:47.918, lon:106.917},{name:"Harbin, CN", lat:45.803, lon:126.535},{name:"Hohhot, CN", lat:40.842, lon:111.749},
+  {name:"Yakutsk, RU", lat:62.035, lon:129.675},{name:"Oymyakon (area), RU", lat:63.460, lon:142.780},
+  // — Australia & Oceania
+  {name:"Darwin, AU", lat:-12.463, lon:130.845},{name:"Alice Springs, AU", lat:-23.698, lon:133.881},{name:"Perth, AU", lat:-31.953, lon:115.857},{name:"Sydney, AU", lat:-33.868, lon:151.209},{name:"Adelaide, AU", lat:-34.928, lon:138.601},{name:"Townsville, AU", lat:-19.258, lon:146.817},{name:"Broome, AU", lat:-17.961, lon:122.236},
+  {name:"Port Moresby, PG", lat:-9.443, lon:147.180},{name:"Honiara, SB", lat:-9.445, lon:159.972},{name:"Nadi, FJ", lat:-17.776, lon:177.435},{name:"Apia, WS", lat:-13.833, lon:-171.767},
+  // — North America hot & cold (sotto il circolo)
+  {name:"Death Valley, US", lat:36.240, lon:-116.820},{name:"Phoenix, US", lat:33.448, lon:-112.074},{name:"Palm Springs, US", lat:33.830, lon:-116.545},{name:"Las Vegas, US", lat:36.171, lon:-115.140},{name:"Yuma, US", lat:32.692, lon:-114.627},
+  {name:"Hermosillo, MX", lat:29.102, lon:-110.977},{name:"Mexicali, MX", lat:32.624, lon:-115.452},{name:"Monterrey, MX", lat:25.686, lon:-100.316},{name:"Torreón, MX", lat:25.542, lon:-103.406},
+  {name:"Brownsville, US", lat:25.901, lon:-97.497},{name:"Miami, US", lat:25.761, lon:-80.191},
+  {name:"Denver, US", lat:39.739, lon:-104.990},{name:"Calgary, CA", lat:51.049, lon:-114.071},
+  {name:"Winnipeg, CA", lat:49.895, lon:-97.138},{name:"Fargo, US", lat:46.877, lon:-96.789},
+  // — Central & South America
+  {name:"San José, CR", lat:9.928, lon:-84.091},{name:"Panama City, PA", lat:8.983, lon:-79.517},{name:"Cartagena, CO", lat:10.391, lon:-75.479},
+  {name:"Caracas, VE", lat:10.491, lon:-66.902},{name:"Manaus, BR", lat:-3.119, lon:-60.021},{name:"Belém, BR", lat:-1.455, lon:-48.503},{name:"Fortaleza, BR", lat:-3.731, lon:-38.526},{name:"Recife, BR", lat:-8.047, lon:-34.877},{name:"Salvador, BR", lat:-12.977, lon:-38.501},
+  {name:"Brasília, BR", lat:-15.797, lon:-47.891},{name:"Cuiabá, BR", lat:-15.598, lon:-56.097},{name:"Campo Grande, BR", lat:-20.469, lon:-54.620},{name:"Asunción, PY", lat:-25.263, lon:-57.575},
+  {name:"Lima, PE", lat:-12.046, lon:-77.043},{name:"Iquitos, PE", lat:-3.743, lon:-73.251},
+  {name:"La Paz, BO", lat:-16.500, lon:-68.150},{name:"Santiago, CL", lat:-33.448, lon:-70.669},{name:"Mendoza, AR", lat:-32.889, lon:-68.845},{name:"Ushuaia, AR", lat:-54.801, lon:-68.303},
+  // — Europe (sotto 66.5°) caldo & freddo
+  {name:"Seville, ES", lat:37.389, lon:-5.984},{name:"Cordoba, ES", lat:37.888, lon:-4.779},{name:"Madrid, ES", lat:40.416, lon:-3.703},{name:"Athens, GR", lat:37.983, lon:23.727},{name:"Rome, IT", lat:41.902, lon:12.496},{name:"Cagliari, IT", lat:39.223, lon:9.121},{name:"Palermo, IT", lat:38.115, lon:13.361},{name:"Paris, FR", lat:48.856, lon:2.352},{name:"Nice, FR", lat:43.710, lon:7.262},
+  {name:"Lisbon, PT", lat:38.722, lon:-9.139},{name:"Faro, PT", lat:37.019, lon:-7.930},
+  {name:"Oslo, NO", lat:59.913, lon:10.752},{name:"Stockholm, SE", lat:59.329, lon:18.068},{name:"Helsinki, FI", lat:60.170, lon:24.938},
+  {name:"Warsaw, PL", lat:52.229, lon:21.012},{name:"Berlin, DE", lat:52.520, lon:13.405},{name:"Vienna, AT", lat:48.208, lon:16.373},
+  {name:"Bucharest, RO", lat:44.426, lon:26.103},{name:"Sofia, BG", lat:42.698, lon:23.322},{name:"Belgrade, RS", lat:44.786, lon:20.448},
+  {name:"Istanbul, TR", lat:41.008, lon:28.978},{name:"Antalya, TR", lat:36.896, lon:30.713},{name:"Diyarbakır, TR", lat:37.925, lon:40.211},
+  // — North Africa rim & Levant
+  {name:"Casablanca, MA", lat:33.573, lon:-7.589},{name:"Marrakesh, MA", lat:31.629, lon:-7.981},{name:"Smara, EH", lat:26.737, lon:-11.671},
+  {name:"Algiers, DZ", lat:36.752, lon:3.042},{name:"Tripoli, LY", lat:32.887, lon:13.191},{name:"Alexandria, EG", lat:31.200, lon:29.918},
+  {name:"Jericho, PS", lat:31.870, lon:35.443},{name:"Eilat, IL", lat:29.557, lon:34.952}
+];
+
+// Pack EXTENDED: se esiste /packs/world1000.json sul tuo hosting, lo carichiamo quando selezioni "Esteso".
+// Formato richiesto: [{"name":"City, CC","lat":12.34,"lon":56.78}, ...]
+const EXTENDED_URL = (window.CITY_DATA_URL) || "/packs/world1000.json";
+
+let map, hotMarker, coldMarker, cities = BASIC.slice();
+
+function initMap(){
+  map = L.map('map', { zoomControl:true, attributionControl:true }).setView([20, 10], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 6, minZoom: 2 }).addTo(map);
+}
+
+function chunk(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
+function fmtC(x){ return `${Math.round(x)}°C`; }
+function row(name, t){ return `<div class="row"><span>${name}</span><b>${fmtC(t)}</b></div>` }
+
+async function fetchBatch(batch){
+  // Costruiamo liste CSV di lat e lon nello stesso ordine
+  const lats = batch.map(c=>c.lat).join(',');
+  const lons = batch.map(c=>c.lon).join(',');
+  const url = `${API}?${CURRENT_PARAM}&latitude=${encodeURIComponent(lats)}&longitude=${encodeURIComponent(lons)}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  // Open‑Meteo con multi‑coords restituisce array allineati
+  const temps = Array.isArray(data?.current?.temperature_2m) ? data.current.temperature_2m : [data?.current?.temperature_2m];
+  const times = Array.isArray(data?.current?.time) ? data.current.time : [data?.current?.time];
+  return batch.map((c,i)=>({ ...c, t: Number(temps[i]), time: times[i] || data?.current?.time || null }));
+}
+
+async function loadPack(which){
+  if(which === 'extended'){
+    try{
+      const res = await fetch(EXTENDED_URL, { cache: 'no-store' });
+      if(res.ok){
+        const arr = await res.json();
+        const filtered = arr.filter(c=> typeof c?.lat==='number' && typeof c?.lon==='number' && Math.abs(c.lat)<66.5);
+        if(filtered.length >= 500){ cities = filtered; return true; }
+      }
+      console.warn('Pack esteso non trovato o insufficiente, uso BASIC');
+      cities = BASIC.slice();
+      return false;
+    }catch(e){
+      console.warn('Errore pack esteso:', e);
+      cities = BASIC.slice();
+      return false;
+    }
+  } else {
+    cities = BASIC.slice();
+    return true;
+  }
+}
+
+async function run(){
+  document.getElementById('hotCard').classList.add('loading');
+  document.getElementById('coldCard').classList.add('loading');
+
+  const batches = chunk(cities, BATCH_SIZE);
+  const results = [];
+  for(const b of batches){
+    try { results.push(...await fetchBatch(b)); }
+    catch(e){ console.warn('Batch error', e); }
+  }
+
+  const valid = results.filter(r=> Number.isFinite(r.t));
+  if(!valid.length){
+    document.getElementById('hotLoc').innerHTML = '<span class="err">Nessun dato</span>';
+    document.getElementById('coldLoc').innerHTML = '<span class="err">Nessun dato</span>';
+    document.getElementById('hotCard').classList.remove('loading');
+    document.getElementById('coldCard').classList.remove('loading');
+    return;
+  }
+
+  valid.sort((a,b)=> b.t - a.t);
+  const hottest = valid[0];
+  const coldest = valid[valid.length-1];
+
+  // UI
+  document.getElementById('hotTemp').textContent = fmtC(hottest.t);
+  document.getElementById('hotLoc').textContent = `${hottest.name}`;
+  document.getElementById('hotTime').textContent = hottest.time ? `Modello: ${new Date(hottest.time).toLocaleString()}` : '';
+
+  document.getElementById('coldTemp').textContent = fmtC(coldest.t);
+  document.getElementById('coldLoc').textContent = `${coldest.name}`;
+  document.getElementById('coldTime').textContent = coldest.time ? `Modello: ${new Date(coldest.time).toLocaleString()}` : '';
+
+  const topHot = valid.slice(0,10).map(x=> row(x.name, x.t)).join('');
+  const topCold = valid.slice(-10).reverse().map(x=> row(x.name, x.t)).join('');
+  document.getElementById('hotList').innerHTML = topHot;
+  document.getElementById('coldList').innerHTML = topCold;
+
+  // MAP
+  if(!map) initMap();
+  if(hotMarker) map.removeLayer(hotMarker);
+  if(coldMarker) map.removeLayer(coldMarker);
+  hotMarker = L.marker([hottest.lat, hottest.lon]).addTo(map).bindPopup(`<b>Più caldo</b><br>${hottest.name}<br>${fmtC(hottest.t)}`);
+  coldMarker = L.marker([coldest.lat, coldest.lon]).addTo(map).bindPopup(`<b>Più freddo</b><br>${coldest.name}<br>${fmtC(coldest.t)}`);
+  const group = L.featureGroup([hotMarker, coldMarker]);
+  map.fitBounds(group.getBounds().pad(0.5), { animate: true });
+
+  document.getElementById('hotCard').classList.remove('loading');
+  document.getElementById('coldCard').classList.remove('loading');
+
+  // Optional refine (Phase 2) se definito
+  if(window.REFINE_ENDPOINT){
+    try {
+      const q = { hot: {lat:hottest.lat, lon:hottest.lon}, cold:{lat:coldest.lat, lon:coldest.lon} };
+      const r = await fetch(`${window.REFINE_ENDPOINT}?hot=${q.hot.lat},${q.hot.lon}&cold=${q.cold.lat},${q.cold.lon}`);
+      if(r.ok){ const data = await r.json(); /* aggiorna se serve */ }
+    } catch(e){ console.warn('Refine endpoint errore', e); }
+  }
+}
+
+// Bind UI
+const refreshBtn = document.getElementById('refresh');
+const packSel = document.getElementById('pack');
+refreshBtn.addEventListener('click', run);
+packSel.addEventListener('change', async (e)=>{ await loadPack(e.target.value); run(); });
+
+// Init
+loadPack('basic').then(run);
+</script>
+</body>
+</html>
